@@ -1,0 +1,2 @@
+class NoFilesError(Exception):
+	pass
