@@ -1,31 +1,26 @@
-import os
-import pandas as pd
-from datetime import timedelta
-import sys
-from datetime import datetime as dt
-from pprint import pprint as pp
 import multiprocessing
-import warnings
-import struct
-import csv
-import numpy as np
-from decimal import * 
-import time
-from collections import OrderedDict
-from scipy import signal, stats
-from tabulate import tabulate
-from itertools import repeat
-import tqdm
-from functools import cached_property
-from geopy.distance import geodesic
-from .exceptions import *
-from . import filters
+import os
 import subprocess
+import sys
+import time
+from datetime import datetime as dt
+from functools import cached_property
+from itertools import repeat
+
+import numpy as np
+import pandas as pd
+import tqdm
+from geopy.distance import geodesic
+from scipy import signal
+from tabulate import tabulate
+
+from . import filters
+
 
 PATH_TO_LEMI_EXE = 'lemimt.exe'
-EXCLUDE_FOLDERS = ['__pycache__','.vscode','sensors','lemipy','lemi']
+EXCLUDE_FOLDERS = ['__pycache__', '.vscode', 'sensors', 'lemipy', 'lemi']
 TIMEZONE = ''
-DECIMATE_TO = [1000,500,100,50,25]
+DECIMATE_TO = [1000, 500, 100, 50, 25]
 
 
 def print_time(t):
@@ -33,16 +28,18 @@ def print_time(t):
     print(new_t-t)
     return new_t
 
-def group_tail(iterator,count,tail,series=True):
+
+def group_tail(iterator, count, tail, series=True):
+
     itr = iter(iterator)
     while True:
         x = []
         try:
-            for i in range(count):
+            for _ in range(count):
                 x.append(next(itr))
             yield files_list_to_series(x)
         except StopIteration:
-            # yields all remaining files regardless of length 
+            # yields all remaining files regardless of length
             if x:
                 yield files_list_to_series(x)
 
@@ -51,7 +48,8 @@ def group_tail(iterator,count,tail,series=True):
             #     yield files_list_to_series(x)
             break
 
-def group(iterator, count,series=True):
+
+def group(iterator, count, series=True):
     itr = iter(iterator)
     while True:
         try:
@@ -62,25 +60,30 @@ def group(iterator, count,series=True):
         except StopIteration:
             break
 
-def list_files(directory,file_type):
+
+def list_files(directory, file_type):
     files = [f for f in os.listdir(directory) if f.endswith(file_type)]
     return files_list_to_series(files)
 
+
 def files_list_to_series(files):
-    files = pd.Series(files,index=pd.to_datetime([f.split('.')[0] for f in files],unit='s',utc=True)).sort_index()
-    files.index = files.index.tz_convert('Australia/Adelaide').tz_localize(None)
+    files = pd.Series(files, index=pd.to_datetime(
+        [f.split('.')[0] for f in files], unit='s', utc=True)).sort_index()
+    files.index = files.index.tz_convert(
+        'Australia/Adelaide').tz_localize(None)
     if files.shape[0] > 2:
         files.freq = files.index[2]-files.index[1]
     elif files.shape[0] == 2:
         files.freq = files.index[1]-files.index[0]
     else:
-        files.freq = pd.Timedelta(90,unit='m')
-    
+        files.freq = pd.Timedelta(90, unit='m')
+
     return files
+
 
 class Header():
     """Decodes and stores the header information of a Lemi B423 binary file.
-    
+
     Attributes
     ----------
     latitude : float
@@ -100,9 +103,10 @@ class Header():
     coefficients : dict
         Python dict of coefficients used to determine site data.    
     """
-    def __init__(self,header):
-        header = header.decode('ascii').replace('%','').split('\n')
-        self.lemi_number = self.get_lemi_number(header) 
+
+    def __init__(self, header):
+        header = header.decode('ascii').replace('%', '').split('\n')
+        self.lemi_number = self.get_lemi_number(header)
         self.get_coordinates(header)
         self.altitude = self.get_altitude(header)
         self.coefficients = self.get_coefficients(header)
@@ -110,44 +114,47 @@ class Header():
         self.battery_voltage = self.get_battery_voltage(header)
         self.deployment_time = self.get_deployment_time(header)
 
-    def get_coefficients(self,header):
+    def get_coefficients(self, header):
         result = {}
         for item in header[13:]:
             item = item.rstrip()
             if item:
-                k,v = item.split('=')
+                k, v = item.split('=')
                 result[k.strip()] = float(v)
                 # setattr(self,k.strip(),float(v))
         return result
 
-    def get_lemi_number(self,header):
+    def get_lemi_number(self, header):
         return int(header[0].split('#')[-1])
 
-    def get_deployment_time(self,header):
+    def get_deployment_time(self, header):
         date_str = header[4].split(' ')[-1] + header[5].split(' ')[-1]
-        return dt.strptime(date_str.replace('\r',''),'%Y/%m/%d%H:%M:%S')
+        return dt.strptime(date_str.replace('\r', ''), '%Y/%m/%d%H:%M:%S')
 
-    def get_coordinates(self,header):
-        lat,direction = header[9].split(' ')[-1].split(',')
-        self.latitude_dm = '{} {},{}'.format(lat[:2], lat[2:], direction.strip())
-        self.latitude = int(lat[:2]) + round(float(lat[2:])/60,6)
+    def get_coordinates(self, header):
+        lat, direction = header[9].split(' ')[-1].split(',')
+        self.latitude_dm = '{} {},{}'.format(
+            lat[:2], lat[2:], direction.strip())
+        self.latitude = int(lat[:2]) + round(float(lat[2:])/60, 6)
         if direction.strip() == 'S':
             self.latitude *= -1
 
-        lon,direction = header[10].split(' ')[-1].split(',')
-        self.longitude_dm = '{} {},{}'.format(lon[:3], lon[3:], direction.strip())
-        self.longitude = int(lon[:3]) + round(float(lon[3:])/60,6)
+        lon, direction = header[10].split(' ')[-1].split(',')
+        self.longitude_dm = '{} {},{}'.format(
+            lon[:3], lon[3:], direction.strip())
+        self.longitude = int(lon[:3]) + round(float(lon[3:])/60, 6)
         if direction.strip() == 'W':
             self.longitude *= -1
 
-    def get_altitude(self,header):
+    def get_altitude(self, header):
         return float(header[11].split(',')[0].split(' ')[-1])
 
-    def get_battery_voltage(self,header):
-        return float(header[6].split(' ')[-1].replace('V',''))
+    def get_battery_voltage(self, header):
+        return float(header[6].split(' ')[-1].replace('V', ''))
 
-    def get_current(self,header):
-        return float(header[7].split(' ')[-1].replace('mA',''))
+    def get_current(self, header):
+        return float(header[7].split(' ')[-1].replace('mA', ''))
+
 
 class LemiFile(Header):
     """Container for a Lemi 423 binary file
@@ -191,19 +198,21 @@ class LemiFile(Header):
             Specify whether data is detrended on initialisation (default to True). Data may be detrended after loading using `LemiFile.detrend`.
 
         """
-        self.channels = ['Bx','By','Bz','Ex','Ey']
-        self.sample_rate=1000 #default
+        self.channels = ['Bx', 'By', 'Bz', 'Ex', 'Ey']
+        self.sample_rate = 1000  # default
         if data is None:
-            self.data = self.load(os.path.join(directory,file_name),mag_only=mag_only)
+            self.data = self.load(os.path.join(
+                directory, file_name), mag_only=mag_only)
         else:
             self.channels = list(data.columns)
             # if 'Bz' not in data.columns:
             # # if data.Bz.mean() == 0:
-            #     self.channels.remove('Bz')            
-            self.data = data        
+            #     self.channels.remove('Bz')
+            self.data = data
         self.directory = directory
         self.file_name = file_name
-        self.plot_directory = os.path.join(self.directory,'plots',self.file_name)
+        self.plot_directory = os.path.join(
+            self.directory, 'plots', self.file_name)
         if detrend:
             self.detrend()
 
@@ -223,9 +232,9 @@ class LemiFile(Header):
     def output_filename(self):
         return self.start_time.strftime(self.FILE_NAME_FORMAT + ".b423.txt")
 
-    def load(self,file_input,mag_only=False):
+    def load(self, file_input, mag_only=False):
         """Decodes a single Lemi binary file.
-        
+
         Parameters
         ----------
 
@@ -237,44 +246,46 @@ class LemiFile(Header):
         df : pandas.DataFrame
             A pandas dataframe containing the decoded binary data.
         """
-        if file_input.split('.')[-1] =='B423':
+        if file_input.split('.')[-1] == 'B423':
             df = self._from_binary(file_input)
         elif file_input.split('.')[-1] == 'h5':
             df = self._from_hdf(file_input)
         else:
-            raise ValueError('Unsupported file type. Only binary and hdf files are currently supported for loading.')
+            raise ValueError(
+                'Unsupported file type. Only binary and hdf files are currently supported for loading.')
 
         if mag_only:
-            df.drop(columns=['Ex','Ey'], inplace=True)
-            [self.channels.remove(channel) for channel in ['Ex','Ey']]
+            df.drop(columns=['Ex', 'Ey'], inplace=True)
+            [self.channels.remove(channel) for channel in ['Ex', 'Ey']]
 
         return df
 
     def detrend(self):
         """Remove the mean and linear trend from all data channels."""
-        detrended = signal.detrend(self.data[self.channels], type='linear',axis=0)
+        detrended = signal.detrend(
+            self.data[self.channels], type='linear', axis=0)
         detrended = signal.detrend(detrended, type='constant', axis=0)
         self._replace_columns(detrended)
 
-    def _replace_columns(self,array,channels=None):
+    def _replace_columns(self, array, channels=None):
         """For some reason this is waaaay faster (1 second) than assigning an array to multiple dataframe columns using df[column_list] = array (~3.5 seconds)."""
         if not channels:
-            channels=self.channels
-        elif isinstance(channels,str):
-            self.data.loc[:,channels] = array
+            channels = self.channels
+        elif isinstance(channels, str):
+            self.data.loc[:, channels] = array
             return
 
-
         if array.ndim > 1 and not array.shape[1] == len(channels):
-            raise ValueError('Width of array must equal number of columns being assigned to. Array shape: {}'.format(array.shape))
+            raise ValueError(
+                'Width of array must equal number of columns being assigned to. Array shape: {}'.format(array.shape))
 
-        for i,channel in enumerate(channels):
+        for i, channel in enumerate(channels):
             # print('Replacing data in {}'.format(channel))
-            self.data.loc[:,channel] = array[:,i]
+            self.data.loc[:, channel] = array[:, i]
 
-    def filter(self,filter,target=None, in_place=False):
+    def filter(self, filter, target=None, in_place=False):
         """Apply a filter to the dataset
-        
+
         Parameters
         ----------
         filter : list of tuples | dict
@@ -319,20 +330,26 @@ class LemiFile(Header):
         >>> site.filter(filters,in_place=True)
         """
         if isinstance(filter, list):
-            b, a = filters.comb(filter,self.sample_rate)
-            return self._apply_filter(b,a,target,in_place)
+            b, a = filters.comb(filter, self.sample_rate)
+            return self._apply_filter(b, a, target, in_place)
 
         elif isinstance(filter, dict):
-            channels = [c for c in self.channels if c not in ['RBx','RBy']]
+            channels = [c for c in self.channels if c not in ['RBx', 'RBy']]
             array = []
             for key, filt in filter.items():
-                b, a = filters.comb(filt,self.sample_rate)
-                to_be_filtered = [c for c in channels if c.startswith(key) or c.endswith(key.lower()) or c in key.split('_') or key == 'all']
-                for channel in to_be_filtered:
-                    array.append(self._apply_filter(b,a,channel,in_place))
+                b, a = filters.comb(filt, self.sample_rate)
+                to_be_filtered = [c for c in channels if c.startswith(key) or c.endswith(
+                    key.lower()) or c in key.split('_') or key == 'all']
+
+                if in_place:
+                    self._apply_filter(b, a, to_be_filtered, in_place)
+                else:
+                    for channel in to_be_filtered:
+                        array.append(self._apply_filter(b, a, channel))
+
             return array
 
-    def decimate(self,decimate_to):
+    def decimate(self, decimate_to):
         """Decimate the data to sampling frequency specified by decimate_to using `scipy.signal.decimate`.
 
         Parameters
@@ -350,22 +367,23 @@ class LemiFile(Header):
         Decimation is always applied directly to the dataframe.
         """
         if decimate_to >= self.sample_rate:
-            raise ValueError('Target sampling frequency must be less than the sampling frequency of the original data. Original sampling frequency calculated to be {}Hz'.format(self.sample_rate))
-        
-        q = int(self.sample_rate/decimate_to) #downsampling factor
+            raise ValueError(
+                'Target sampling frequency must be less than the sampling frequency of the original data. Original sampling frequency calculated to be {}Hz'.format(self.sample_rate))
+
+        q = int(self.sample_rate/decimate_to)  # downsampling factor
 
         # apply proper decimation on the data columns
         decimated_array = signal.decimate(self.data[self.channels],
-                                        q=q,
-                                        ftype='fir',
-                                        axis=0)
+                                          q=q,
+                                          ftype='fir',
+                                          axis=0)
 
-        self.data = self.data.iloc[::q,:].copy()
+        self.data = self.data.iloc[::q, :].copy()
         self._replace_columns(decimated_array)
 
         return self.data
 
-    def export(self,file_name='',prepend_filename='',export_format=None):
+    def export(self, file_name='', prepend_filename='', export_format=None):
         """Export the current file as a .b423.txt file used in the LemiGraph software.
 
         Parameters
@@ -380,9 +398,11 @@ class LemiFile(Header):
 
         if export_format is None:
             if file_name:
-                file_out = os.path.join(self.directory,prepend_filename+file_name)
+                file_out = os.path.join(
+                    self.directory, prepend_filename+file_name)
             else:
-                file_out = os.path.join(self.directory,prepend_filename+self.output_filename)
+                file_out = os.path.join(
+                    self.directory, prepend_filename+self.output_filename)
 
             # print('Exporting file {}'.format(file_out))
 
@@ -393,17 +413,17 @@ class LemiFile(Header):
                 elif channel.startswith('E'):
                     fmt.append("%.3f")
 
-            with open(file_out,'a') as f:
+            with open(file_out, 'a') as f:
                 np.savetxt(f,
-                    self.data,
-                    fmt=' '.join(fmt))
+                           self.data,
+                           fmt=' '.join(fmt))
 
         elif export_format == 'hdf':
-            file_out = os.path.join(self.directory,file_name.split('.')[0]+'.h5')
+            file_out = os.path.join(
+                self.directory, file_name.split('.')[0]+'.h5')
             # print('Exporting file {}'.format(file_out))
 
-            self.data.to_hdf(file_out,key='data')
-
+            self.data.to_hdf(file_out, key='data')
 
 
         return file_out, list(self.data.columns)
@@ -411,40 +431,41 @@ class LemiFile(Header):
     def _variance(self):
         return self.data[self.channels].var()
 
-    def _apply_filter(self,b,a,target=None, in_place=False):
+    def _apply_filter(self, b, a, target=None, in_place=False):
         if not target:
-            target = [channel for channel in self.channels if channel not in ['RBx','RBy','RBz']]
+            target = [channel for channel in self.channels if channel not in [
+                'RBx', 'RBy', 'RBz']]
 
-        filtered_signal = signal.filtfilt(b,a,self.data[target],axis=0)
+        filtered_signal = signal.filtfilt(b, a, self.data[target], axis=0)
 
         if in_place:
-            self._replace_columns(filtered_signal,channels=target)
+            self._replace_columns(filtered_signal, channels=target)
         else:
             return filtered_signal
 
-    def _from_binary(self,binary_file):
+    def _from_binary(self, binary_file):
         binary_format = np.dtype([
-            ('time','u4'),
-            ('tick','u2'),
-            ('Bx','i4'),
-            ('By','i4'),
-            ('Bz','i4'),
-            ('Ex','i4'),
-            ('Ey','i4'),
-            ('sync','b'),
-            ('stage','B'),
-            ('CRC','i2'),])
+            ('time', 'u4'),
+            ('tick', 'u2'),
+            ('Bx', 'i4'),
+            ('By', 'i4'),
+            ('Bz', 'i4'),
+            ('Ex', 'i4'),
+            ('Ey', 'i4'),
+            ('sync', 'b'),
+            ('stage', 'B'),
+            ('CRC', 'i2'), ])
 
-        with open(binary_file,'rb') as f:
+        with open(binary_file, 'rb') as f:
             super().__init__(f.read(1024))
             data = np.fromfile(f, dtype=binary_format)
 
-        df = pd.DataFrame(data) 
+        df = pd.DataFrame(data)
         # df['time'] = pd.to_datetime(df['time'],unit='s',utc=True) + pd.to_timedelta(df['tick'],unit='ms')
-        df['time'] = pd.to_datetime(df['time'],unit='s') + pd.to_timedelta(df['tick'],unit='ms')
-        
+        df['time'] = pd.to_datetime(
+            df['time'], unit='s') + pd.to_timedelta(df['tick'], unit='ms')
 
-        # df['time_delta'] = df['time'] - df['time'][0]    
+        # df['time_delta'] = df['time'] - df['time'][0]
         # df['minutes_elapsed'] = df['time_delta'].dt.total_seconds()/60
 
         df['Bx'] = df['Bx'] * self.coefficients['Kmx'] + self.coefficients['Ax']
@@ -453,33 +474,31 @@ class LemiFile(Header):
         df['Ex'] = df['Ex'] * self.coefficients['Ke1'] + self.coefficients['Ae1']
         df['Ey'] = df['Ey'] * self.coefficients['Ke2'] + self.coefficients['Ae2']
 
-        df.set_index('time',inplace=True)
+        df.set_index('time', inplace=True)
         if TIMEZONE:
             # df.index = df.index.tz_convert(TIMEZONE).tz_localize(None)
             pass
-
-
-        drop = ['tick','CRC','sync','stage'] #always dropped
+        drop = ['tick', 'CRC', 'sync', 'stage']  # always dropped
         self.sample_rate = df['tick'].max()+1
 
         # drop = []
         if df['Bz'].mean() < -5000 or df['Bz'].var() < 10:
             drop.append('Bz')
-            self.channels.remove('Bz') #avoids computationally expensive processing on Bz if no data is recorded
+            # avoids computationally expensive processing on Bz if no data is recorded
+            self.channels.remove('Bz')
 
             # if mag_only:
             #     drop.append('Bz')
             # else:
             #     df['Bz'] = np.zeros(df.shape[0],dtype=int)
 
-
-
         df.drop(columns=drop, inplace=True)
 
         return df
-    
-    def _from_hdf(self,hdf_file):
+
+    def _from_hdf(self, hdf_file):
         return pd.read_hdf(hdf_file)
+
 
 class Site(Header):
     """Represents an individual site in the current survey
@@ -502,7 +521,7 @@ class Site(Header):
             Sampling frequency of the instrument. Requires loading a binary file when first accessed. Attribute is cached so that all subsequent queries do not require load a file.
     """
 
-    def __init__(self,site_name,survey_data=None,directory=os.getcwd(),load=False,remote=None):
+    def __init__(self, site_name, survey_data=None, directory=os.getcwd(), load=False, remote=None):
         """
         Parameters:
 
@@ -518,10 +537,10 @@ class Site(Header):
         .. note:: The `Site` object subclasses the `Header` object and therefore all `Header` attributes are available directly from the `Site` object. e.g `Site.latitude` will return the `latitude' attribute of the `Header` object. See `Header` for available attributes'
         """
         self.name = site_name
-        self.directory = os.path.join(directory,site_name)
+        self.directory = os.path.join(directory, site_name)
         self.get_field_data(survey_data)
 
-        with open(os.path.join(self.directory,self.files[0].split('.')[0]+'.B423'),'rb') as first:
+        with open(os.path.join(self.directory, self.files[0].split('.')[0]+'.B423'), 'rb') as first:
             super().__init__(first.read(1024))
 
         self.deployment_length = self.pickup_time - self.deployment_time
@@ -535,15 +554,15 @@ class Site(Header):
             self.load_file(load)
 
     def __str__(self):
-        return tabulate([[k,v] for k,v in self.summary().items()])
+        return tabulate([[k, v] for k, v in self.summary().items()])
 
     @property
     def coordinates(self):
-        return (self.latitude,self.longitude)
+        return (self.latitude, self.longitude)
 
     @property
     def files(self):
-        files = list_files(self.directory,'.B423')
+        files = list_files(self.directory, '.B423')
         self.file_freq = files.index[2] - files.index[1]
         return files
 
@@ -557,16 +576,16 @@ class Site(Header):
 
     @cached_property
     def pickup_time(self):
-        last_file = os.path.join(self.directory,self.files[-1])
-        with open(last_file,'rb') as last:
-            last.seek(-30,2)
-            return dt.utcfromtimestamp(int.from_bytes(last.read(4),byteorder=sys.byteorder))
+        last_file = os.path.join(self.directory, self.files[-1])
+        with open(last_file, 'rb') as last:
+            last.seek(-30, 2)
+            return dt.utcfromtimestamp(int.from_bytes(last.read(4), byteorder=sys.byteorder))
 
     @cached_property
     def sample_rate(self):
         return self.in_memory.sample_rate
 
-    def remote_files(self,site_files=None,skip_first=False,skip_last=False):
+    def remote_files(self, site_files=None, skip_first=False, skip_last=False):
         if site_files is None:
             site_files = self.files
 
@@ -574,44 +593,49 @@ class Site(Header):
         last = site_files.index[-1] if not skip_last else site_files.index[-2]
 
         start = first-self.file_freq
-        finish = last+self.file_freq        
+        finish = last+self.file_freq
 
-        result = {f:list_files(remote.directory,'.h5')[start:finish] for f, remote in self.remote.items() if not list_files(remote.directory,'.h5')[start:finish].empty}
+        result = {f: list_files(remote.directory, '.h5')[start:finish] for f, remote in self.remote.items(
+        ) if not list_files(remote.directory, '.h5')[start:finish].empty}
 
-        return pd.concat(result.values(),keys=result.keys())
+        return pd.concat(result.values(), keys=result.keys())
 
-    def get_field_data(self,survey_data):
+    def get_field_data(self, survey_data):
         if survey_data is None:
             return
         else:
             data = survey_data.loc[self.name]
-        self.Ex = {k.split('_')[-1]:v for k,v in data.items() if k.startswith('Ex')}
-        self.Ey = {k.split('_')[-1]:v for k,v in data.items() if k.startswith('Ey')}
+        self.Ex = {k.split('_')[-1]: v for k,
+                   v in data.items() if k.startswith('Ex')}
+        self.Ey = {k.split('_')[-1]: v for k,
+                   v in data.items() if k.startswith('Ey')}
 
-    def summary(self,detailed=False):
+    def summary(self, detailed=False):
         """Return a brief summary of the current site.
 
         Parameters:
             detailed : bool
                 If True, return statistical information calculated for each data channel. Requires loading a file into memory.
         """
-        exclude = ['coefficients','fileout_format','directory','in_memory','filters','latitude_dm','longitude_dm','Ex','Ey','remote']
-        output = {k:v for k,v in self.__dict__.items() if k not in exclude}
+        exclude = ['coefficients', 'fileout_format', 'directory', 'in_memory',
+                   'filters', 'latitude_dm', 'longitude_dm', 'Ex', 'Ey', 'remote']
+        output = {k: v for k, v in self.__dict__.items() if k not in exclude}
         if detailed:
-            output = {**output, **{k+'_var':int(v) for k,v in dict(self.in_memory._variance()).items()}}
-        return {**output,'distance_to_remote':self.distance_to_remote()}
+            output = {
+                **output, **{k+'_var': int(v) for k, v in dict(self.in_memory._variance()).items()}}
+        return {**output, 'distance_to_remote': self.distance_to_remote()}
 
-    def load_file(self,binary_file,kwargs={}):
+    def load_file(self, binary_file, kwargs={}):
         """Loads a binary file into a `LemiFile` instance and stores in `Site.in_memory`. `Site.sample_rate` is also set to avoid future calls to load file when accessing the `sample_rate` attribute.
         """
-        if isinstance(binary_file,int):
+        if isinstance(binary_file, int):
             binary_file = self.files[binary_file]
-        self.in_memory = LemiFile(self.directory,binary_file,**kwargs)    
+        self.in_memory = LemiFile(self.directory, binary_file, **kwargs)
         self.sample_rate = self.in_memory.sample_rate
 
         return self.in_memory
 
-    def decimate(self,site_files,decimate_to,remote_files=None,save=True):
+    def decimate(self, site_files, decimate_to, remote_files=None, save=True):
         """Decimate files using `scipy.signal.decimate` and combine into one dataframe.
 
         Parameters
@@ -625,40 +649,47 @@ class Site(Header):
                 Remote files from which to source replacement magnetic channels
             save : bool, opt
                 If True, will export the decimated `pd.DataFrame` on completion'
-            
+
         Returns
         -------
         data : `LemiFile` instance
             A new LemiFile instance holding the decimated data from the combined input site_files
         """
         # merge the site data into a single dataframe
-        data = pd.concat([self.load_file(f).data for f in site_files],copy=False)
+        data = pd.concat(
+            [self.load_file(f).data for f in site_files], copy=False)
 
         # determine the available magnetic channels from the site data
-        mag_channels = [channel for channel in data.columns if channel.startswith('B')]
+        mag_channels = [
+            channel for channel in data.columns if channel.startswith('B')]
 
         # get the approriate remote Site instance for the given remote_files
         if remote_files is not None:
             remote = self.remote.get(remote_files.index.unique(0)[0])
 
             # combine the remote files into a single dataframe
-            remote_data = pd.concat([remote.load_file(f,{'mag_only':True,'detrend':False}).data[mag_channels] for f in remote_files],copy=False)
+            remote_data = pd.concat([remote.load_file(
+                f, {'mag_only': True, 'detrend': False}).data[mag_channels] for f in remote_files], copy=False)
 
-            # rename the maganetic channels to avoid a name conflict with the site magnetic channels 
-            remote_data.rename(columns={ch:'R'+ch for ch in mag_channels},inplace=True)
+            # rename the maganetic channels to avoid a name conflict with the site magnetic channels
+            remote_data.rename(
+                columns={ch: 'R'+ch for ch in mag_channels}, inplace=True)
 
-            if self.export_options.get('remote_offset',None):
-                remote_data.index = remote_data.index.shift(self.export_options.get('remote_offset'),'s')
+            if self.export_options.get('remote_offset', None):
+                remote_data.index = remote_data.index.shift(
+                    self.export_options.get('remote_offset'), 's')
 
             # merge site and remote data into a single dataframe according to the time index of the site data
-            data = pd.concat([data,remote_data],axis=1,join='inner',copy=False)
+            data = pd.concat([data, remote_data], axis=1,
+                             join='inner', copy=False)
 
             del remote_data
         # delete the original dataframes to free memory
         # del site_data
 
         # convert merged data to a LemiFile instance
-        data = LemiFile(self.directory,file_name='{}Hz'.format(decimate_to),data=data)
+        data = LemiFile(self.directory, file_name='{}Hz'.format(
+            decimate_to), data=data)
 
         # decimate the merged data
         if decimate_to != 1000:
@@ -668,9 +699,9 @@ class Site(Header):
             data.export()
         return data
 
-    def export(self,files,decimate_to=None,create_edi=True,remote=True):
-        #Find corresponding remote files if required
-        if remote and self.export_options.get('remote',True):
+    def export(self, files, decimate_to=None, create_edi=True, remote=True):
+        # Find corresponding remote files if required
+        if remote and self.export_options.get('remote', True):
             remote_files = self.remote_files(site_files=files)
 
             # ALL REMOTE FILES MUST COME FROM THE SAME REMOTE FOLDER
@@ -679,9 +710,10 @@ class Site(Header):
             else:
                 remote = self.remote.get(remote_files.index.unique(0)[0])
         else:
-            remote_files = None 
-        
-        date_from_file = dt.fromtimestamp(int(files[0].split('.')[0])).strftime("%d_%b_%Y_%H%M")
+            remote_files = None
+
+        date_from_file = dt.fromtimestamp(
+            int(files[0].split('.')[0])).strftime("%d_%b_%Y_%H%M")
 
         output_filename = '{}{}Hz_{}.txt'.format(
             'F' if self.export_options.get('filter') else '',
@@ -689,85 +721,97 @@ class Site(Header):
             date_from_file)
 
         print('Processing {}'.format(output_filename))
-        t=time.time()
+
+        output = pd.DataFrame()
+
         for f in files:
             data = self.load_file(f).data
 
             # determine the available magnetic channels from the site data
-            mag_channels = [channel for channel in data.columns if channel.startswith('B')]
+            mag_channels = [
+                channel for channel in data.columns if channel.startswith('B')]
 
             if remote_files is not None:
 
                 # combine the remote files into a single dataframe
-                remote_data = pd.concat([remote.load_file(f,{'mag_only':True,'detrend':False}).data[mag_channels] for f in remote_files[:2]],copy=False)
+                remote_data = pd.concat([remote.load_file(
+                    f, {'mag_only': True, 'detrend': False}).data[mag_channels] for f in remote_files[:2]], copy=False)
 
-                # rename the magnetic channels to avoid a name conflict with the site magnetic channels 
-                remote_data.rename(columns={ch:'R'+ch for ch in mag_channels},inplace=True)
+                # rename the magnetic channels to avoid a name conflict with the site magnetic channels
+                remote_data.rename(
+                    columns={ch: 'R'+ch for ch in mag_channels}, inplace=True)
 
-                # t = print_time(t)
-                if self.export_options.get('remote_offset',None):
-                    remote_data.index = remote_data.index.shift(self.export_options.get('remote_offset'),'s')
-                # t = print_time(t)
+                if self.export_options.get('remote_offset', None):
+                    remote_data.index = remote_data.index.shift(
+                        self.export_options.get('remote_offset'), 's')
 
                 # merge site and remote data into a single dataframe according to the time index of the site data
-                data = pd.concat([data,remote_data],axis=1,join='inner',copy=False)
-                # t = print_time(t)
+                data = pd.concat([data, remote_data], axis=1,
+                                 join='inner', copy=False)
 
                 # remove from memory
                 del remote_data
-                
+
                 # remove first file from remote_files
-                remote_files.drop(remote_files.index[0],inplace=True)
+                remote_files.drop(remote_files.index[0], inplace=True)
 
             # convert merged data to a LemiFile instance
-            data = LemiFile(self.directory,file_name='{}Hz'.format(decimate_to),data=data)
+            data = LemiFile(self.directory, file_name='{}Hz'.format(
+                decimate_to), data=data)
 
             # Decimate the merged data
             if decimate_to != 1000:
                 data.decimate(decimate_to)
 
+            output = pd.concat([output, data.data], copy=False)
 
+        data = LemiFile(self.directory, file_name='{}Hz'.format(
+            decimate_to), data=output)
+        del output
 
-            # Apply filters
-            if self.export_options.get('filter'):
-                data.filter(self.export_options['filter'],in_place=True)
+        # Apply filters
+        if self.export_options.get('filter'):
+            data.filter(self.export_options['filter'], in_place=True)
 
-            # Export
-            if self.export_options.get('format') == 'hdf':
-                exported_file_name, channels = data.export(file_name=f,export_format='hdf')    
-            else:
-                exported_file_name, channels = data.export(file_name=output_filename)
+        # Export
+        if self.export_options.get('format') == 'hdf':
+            exported_file_name, channels = data.export(
+                file_name=f, export_format='hdf')
+        else:
+            exported_file_name, channels = data.export(
+                file_name=output_filename)
 
         if create_edi and not self.export_options.get('format') == 'hdf':
-            self.to_edi(exported_file_name,channels)
+            self.to_edi(exported_file_name, channels)
 
-    def batch_export(self,processes=None,test=False):
+    def batch_export(self, processes=None, test=False):
         if not processes:
             processes = int(multiprocessing.cpu_count()/2)
 
         export_args = []
 
-        for decimate_to in sorted(list(self.export_options.get('decimate',DECIMATE_TO))):
+        for decimate_to in sorted(list(self.export_options.get('decimate', DECIMATE_TO))):
             num_files = int(1000/decimate_to)
-            export_args += list(zip(group_tail(self.files,num_files*2,num_files),repeat(decimate_to)))
-            # export_args += list(zip(group_tail(self.files,num_files,num_files),repeat(decimate_to)))
+            # export_args += list(zip(group_tail(self.files,num_files*2,num_files),repeat(decimate_to)))
+            export_args += list(zip(group_tail(self.files,
+                                               num_files, num_files), repeat(decimate_to)))
 
         if test:
-            self.export(self.files[2:4],1000)
+            self.export(self.files[2:4], 1000)
         else:
             with multiprocessing.Pool(processes=processes) as pool:
                 pool.starmap(self.export, export_args)
 
-    def create_config(self,file_name,channels):
-        # config_file = os.path.join(self.directory,file_name.split('.')[0])
-        config_file = os.path.join(self.name,file_name.split('.')[0])
-        fname= os.path.split(file_name)[1]
+    def create_config(self, file_name, channels):
+        # config_file = os.path.join(file_name.split('.')[0])
+        # config_file = os.path.join(self.name,file_name.split('.')[0])
+        fname = os.path.split(file_name)[1]
         try:
-            SAMPLE_RATE = int(fname.split('Hz')[0])
+            sample_rate = int(fname.split('Hz')[0])
         except ValueError:
-            SAMPLE_RATE = int(fname.split('Hz')[0][1:])
+            sample_rate = int(fname.split('Hz')[0][1:])
 
-        with open(config_file+ ".cfg",'w') as f:
+        with open(file_name.replace('.txt', '.cfg'), 'w') as f:
             f.write(
                 'SITE {name}\n'
                 'LATITUDE {latitude}\n'
@@ -776,16 +820,16 @@ class Site(Header):
                 'DECLINATION {declination}\n'
                 'SAMPLING {sample_rate}\n'
                 'NCHAN {number_of_channels}\n'
-            .format(
-                name=file_name.split('.')[0],
-                latitude=self.latitude_dm,
-                longitude=self.longitude_dm,
-                elevation=self.altitude,
-                declination=0,
-                sample_rate=1/SAMPLE_RATE,
-                number_of_channels=len(channels),    ))
+                .format(
+                    name=file_name.split('.')[0],
+                    latitude=self.latitude_dm,
+                    longitude=self.longitude_dm,
+                    elevation=self.altitude,
+                    declination=0,
+                    sample_rate=1/sample_rate,
+                    number_of_channels=len(channels),))
 
-            for i,channel in enumerate(channels):
+            for i, channel in enumerate(channels):
                 if channel.startswith('B') or channel.startswith('R'):
                     f.write('  {i}   {H:.7f} 1  {Hrsp}\n'.format(
                         i=i+1,
@@ -793,17 +837,18 @@ class Site(Header):
                         Hrsp='l120new.rsp'))
 
                 elif channel.startswith('E'):
-                    E = getattr(self,channel)['length'] ** -1
+                    E = getattr(self, channel)['length'] ** -1
                     f.write('  {i}   {E:.7f} 1  {Ersp}\n'.format(
                         i=i+1,
-                        E= E if getattr(self,channel)['azimuth'] not in [0,90] else E*-1,
+                        E=E if getattr(self, channel)['azimuth'] not in [
+                            0, 90] else E*-1,
                         Ersp='e000.rsp'))
 
             if len(channels) > 5:
                 f.write('NREFCH        2\n')
 
-    def to_edi(self,file_name,channels,sensor_response=True, robust=True, coherence_presorting=False,prewhitening=None,delete_on_completion=False,suppress_lemi_output=False):
-        self.create_config(file_name,channels)
+    def to_edi(self, file_name, channels, sensor_response=True, robust=True, coherence_presorting=False, prewhitening=None, delete_on_completion=False, suppress_lemi_output=False):
+        self.create_config(file_name, channels)
 
         command = ['lemimt.exe']
 
@@ -818,32 +863,36 @@ class Site(Header):
 
         command.append(file_name)
 
-        if self.export_options.get('clean',True):
+        if self.export_options.get('clean', True):
             log_file = os.devnull
         else:
-            log_file = file_name.split('.')[0]+'_lemimt.log'
+            log_file = file_name.split('.')[0]+'.log'
 
-        with open(log_file,'w') as f:
-            subprocess.run(command,stdout=f)
+        with open(log_file, 'w') as f:
+            subprocess.run(command, stdout=f)
 
-        if delete_on_completion or self.export_options.get('clean',True):
+        if delete_on_completion or self.export_options.get('clean', True):
             os.remove(file_name)
-            os.remove(file_name.split('.')[0] +'.cfg')
+            os.remove(file_name.replace('.txt', '.cfg'))
 
     def distance_to_remote(self):
-        return round(geodesic(self.coordinates, list(self.remote.values())[0].coordinates).km,2)
+        return round(geodesic(self.coordinates, list(self.remote.values())[0].coordinates).km, 2)
+
 
 class Remote(Site):
 
-    def __init__(self,site_name,folders,survey_data=None,load=False,remote=None):
-        self.folders = {remote_folder: Site(remote_folder,survey_data) for remote_folder in folders}
+    def __init__(self, site_name, folders, survey_data=None, load=False, remote=None):
+        self.folders = {remote_folder: Site(
+            remote_folder, survey_data) for remote_folder in folders}
         self.name = site_name
-        super().__init__('',survey_data,directory=list(self.folders.values())[0].directory,load=load,remote=remote)    
-    
+        super().__init__('', survey_data, directory=list(
+            self.folders.values())[0].directory, load=load, remote=remote)
+
     @property
     def files(self):
-        result = {f:list_files(remote.directory,'.B423') for f, remote in self.folders.items() if not list_files(remote.directory,'.B423').empty}
-        return pd.concat(result.values(),keys=result.keys())
+        result = {f: list_files(remote.directory, '.B423') for f, remote in self.folders.items(
+        ) if not list_files(remote.directory, '.B423').empty}
+        return pd.concat(result.values(), keys=result.keys())
 
     def distance_to_remote(self):
         return 0
@@ -852,12 +901,13 @@ class Remote(Site):
         summary = super().summary()
         del summary['distance_to_remote']
         del summary['pickup_time']
-        
-        return {**summary, 'remote_folders':len(self.folders)}
+
+        return {**summary, 'remote_folders': len(self.folders)}
+
 
 class Survey():
     """ Survey object that summarises an entire object and stores individual site summaries.
-    
+
     Attributes
     ----------
         directory : str
@@ -873,7 +923,8 @@ class Survey():
         count : int
             Number of sites
     """
-    def __init__(self,directory=os.getcwd(),remote='/',survey_data=None):
+
+    def __init__(self, directory=os.getcwd(), remote='/', survey_data=None):
         """        
         Parameters:
             directory : str, opt
@@ -886,7 +937,7 @@ class Survey():
         self.directory = directory
 
         if survey_data is not None:
-            self.survey_data = pd.read_csv(survey_data,index_col='name')
+            self.survey_data = pd.read_csv(survey_data, index_col='name')
         else:
             self.survey_data = None
 
@@ -895,34 +946,34 @@ class Survey():
         self.sites = self.get_sites()
 
     def __str__(self):
-        return tabulate([[k.replace('_',' ').title(),v] for k,v in self.summary().items()])
+        return tabulate([[k.replace('_', ' ').title(), v] for k, v in self.summary().items()])
 
     def populate_site_list(self):
-        return [name for name in sorted(os.listdir(self.directory)) if os.path.isdir(os.path.join(self.directory, name)) and not list_files(os.path.join(self.directory, name),'.B423').empty]
+        return [name for name in sorted(os.listdir(self.directory)) if os.path.isdir(os.path.join(self.directory, name)) and not list_files(os.path.join(self.directory, name), '.B423').empty]
 
     @property
     def count(self):
         return len(self.sites)
 
-    def get_remote(self,remote_name):
+    def get_remote(self, remote_name):
         if remote_name != '/':
             # find all site folders that startwith remote_name
-            return {site: Site(site,survey_data=self.survey_data,directory=self.directory) for site in self.site_list if site.startswith(remote_name)}
+            return {site: Site(site, survey_data=self.survey_data, directory=self.directory) for site in self.site_list if site.startswith(remote_name)}
 
-    def get_sites(self,sites=None):
+    def get_sites(self):
         return {site: Site(site,
-                        survey_data=self.survey_data,
-                        remote=self.remote,
-                        directory=self.directory) for site in self.site_list}
+                           survey_data=self.survey_data,
+                           remote=self.remote,
+                           directory=self.directory) for site in self.site_list}
 
         # for site in self.site_list:
         #     self.sites[site] = Site(site,survey_data=self.survey_data,remote=self.remote)
-            # if isinstance(self.survey_data,pd.DataFrame):
+        # if isinstance(self.survey_data,pd.DataFrame):
 
-            # else:
-            #     self.sites[site] = Site(site,remote=self.remote)
+        # else:
+        #     self.sites[site] = Site(site,remote=self.remote)
 
-    def dataframe(self,filename=None,detailed=False,processes=None):
+    def dataframe(self, filename=None, detailed=False, processes=None):
         """Returns a pandas dataframe summarising the survey. If a filename is provided, the dataframe will be saved to file using the pandas `DataFrame.to_csv' method.
 
         Parameters:
@@ -935,7 +986,7 @@ class Survey():
                 If detailed is True, specify the number of cpu's to use. Defaults to half the cpu's as determined by `multiprocessing.cpu_count`.
         """
         if not self.sites:
-            self.get_all_sites()
+            self.get_sites()
 
         if detailed:
             self.site_list = []
@@ -944,15 +995,16 @@ class Survey():
                 processes = int(multiprocessing.cpu_count()/2)
 
             with multiprocessing.Pool(processes=processes) as pool:
-                for _ in tqdm.tqdm(pool.imap_unordered(self._get_detailed_site_summary,self.sites.values()), total=len(self.sites.values())):
+                for _ in tqdm.tqdm(pool.imap_unordered(self._get_detailed_site_summary, self.sites.values()), total=len(self.sites.values())):
                     pass
 
         else:
-            self.site_list = [site.summary(detailed) for site in self.sites.values()]        
+            self.site_list = [site.summary(detailed)
+                              for site in self.sites.values()]
 
         df = pd.DataFrame(self.site_list)
-        df.sort_values(by=['name'],inplace=True)
-        df.set_index('name',inplace=True)
+        df.sort_values(by=['name'], inplace=True)
+        df.set_index('name', inplace=True)
         if filename:
             df.to_csv(filename)
         return df
@@ -962,25 +1014,25 @@ class Survey():
         print(os.path.basename(os.getcwd()))
         df = self.dataframe()
         return dict(
-            site_count = df.shape[0],
-            lat_bounds = (df.latitude.min(), df.latitude.max()),
-            lon_bounds = (df.longitude.min(), df.longitude.max()),
-            first_deployment = df.deployment_time.min(),
-            last_pick_up = df.pickup_time.max(),
-            survey_duration = df.pickup_time.max() - df.deployment_time.min(),
+            site_count=df.shape[0],
+            lat_bounds=(df.latitude.min(), df.latitude.max()),
+            lon_bounds=(df.longitude.min(), df.longitude.max()),
+            first_deployment=df.deployment_time.min(),
+            last_pick_up=df.pickup_time.max(),
+            survey_duration=df.pickup_time.max() - df.deployment_time.min(),
             # index out dedicated remote to get more accurate average
             # ave_deployment_length = df[~df.index.str.contains(self.remote)].deployment_length.mean(),
-            lemi_boxes_used = df.lemi_number.sort_values().unique(),
+            lemi_boxes_used=df.lemi_number.sort_values().unique(),
         )
 
-    def _get_detailed_site_summary(self,site):
+    def _get_detailed_site_summary(self, site):
         self.site_list.append(self.sites[site].summary(detailed=True))
 
     # def filter(self,site_name,f=10):
 
-    #     site = self.sites[site_name] 
+    #     site = self.sites[site_name]
     #     site.export_options = getattr(export_options,site_name)
-       
+
     #     if f == 'range':
     #         for i in range(2,15,4):
     #             site.load_file(i)
@@ -996,7 +1048,7 @@ class Survey():
     #         # plot.time_series(site)
 
     # def export(self,site_name,test=False):
-    #     site = survey.sites[site_name] 
+    #     site = survey.sites[site_name]
     #     site.export_options = getattr(export_options,site_name)
     #     if test:
     #         site.export_options['clean'] = False
@@ -1014,6 +1066,3 @@ if __name__ == '__main__':
     # t=time.time()
     # survey = Survey(remote='C5')
     # site = survey.sites['A1']
-
-
-

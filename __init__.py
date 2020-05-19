@@ -1,2 +1,2 @@
-from .LEMI import *
+from .lemi import *
 from . import plot
