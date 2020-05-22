@@ -13,15 +13,20 @@ import tqdm
 from geopy.distance import geodesic
 from scipy import signal
 from tabulate import tabulate
+from pprint import pprint as pp
 
 from . import filters
+sys.path.insert(0, os.path.abspath('.'))
+try:
+    import export_options
+except ModuleNotFoundError:
+    pass
 
 
 PATH_TO_LEMI_EXE = 'lemimt.exe'
 EXCLUDE_FOLDERS = ['__pycache__', '.vscode', 'sensors', 'lemipy', 'lemi']
 TIMEZONE = ''
 DECIMATE_TO = [1000, 500, 100, 50, 25]
-
 
 def print_time(t):
     new_t = time.time()
@@ -30,7 +35,20 @@ def print_time(t):
 
 
 def group_tail(iterator, count, tail, series=True):
+    """Generates a sublist of length `count` for a given list specified by `iterator`.
 
+    Args:
+        iterator (list): The list to generate grouped items from.
+        count (int): The number of items to include within each group.
+        tail (int): Skip remaining files if the amount left is less than the length specified by tail.
+        series (bool, optional): Converts the group to a time-indexed pandas.Series using :func:~`files_list_to_series`. Defaults to True.
+
+    Yields:
+        list|pandas.Series: Group of list items.
+
+    .. note
+        This generator will include any left over files in `iterator`. Therefore the final yielded value may or may not be equal to `count`.
+    """
     itr = iter(iterator)
     while True:
         x = []
@@ -50,6 +68,19 @@ def group_tail(iterator, count, tail, series=True):
 
 
 def group(iterator, count, series=True):
+    """Generates a sublist of length `count` for a given list specified by `iterator`.
+
+    Args:
+        iterator (list): The list to generate grouped items from.
+        count (int): The number of items to include within each group.
+        series (bool, optional): Converts the group to a time-indexed pandas.Series using :func:~`files_list_to_series`. Defaults to True.
+
+    Yields:
+        list|pandas.Series: Group of list items.
+
+    .. note
+        This generator will skip any left over files in `iterator` if the amount of files left is less than that specified by `count`.
+    """
     itr = iter(iterator)
     while True:
         try:
@@ -62,11 +93,28 @@ def group(iterator, count, series=True):
 
 
 def list_files(directory, file_type):
+    """Generate a list of files of a certain file type from a given directory.
+
+    Args:
+        directory (str|path): A path to a directory containing files to be listed.
+        file_type (str): A specific file type to search for.
+
+    Returns:
+        list: The files of specified type in the given directory.
+    """
     files = [f for f in os.listdir(directory) if f.endswith(file_type)]
     return files_list_to_series(files)
 
 
 def files_list_to_series(files):
+    """Convert a list of binary files to a datetime-indexed pandas series. Datetimes are determined by file names (which are Unix times) and converted to local time.
+
+    Args:
+        files (list): A list of Lemi binary files (.B423).
+
+    Returns:
+        pandas.Series: A time-index pandas series of binary files.
+    """
     files = pd.Series(files, index=pd.to_datetime(
         [f.split('.')[0] for f in files], unit='s', utc=True)).sort_index()
     files.index = files.index.tz_convert(
@@ -184,7 +232,7 @@ class LemiFile(Header):
     FILE_NAME_FORMAT = "%d_%b_%Y_%H%M"
     DATETIME_FORMAT = "%Y %m %d %H %M %S"
 
-    def __init__(self, directory, file_name, data=None, detrend=True, mag_only=False):
+    def __init__(self, directory, file_name, data=None, sample_rate=1000, detrend=True, mag_only=False):
         """
         Parameters
         ----------
@@ -199,7 +247,7 @@ class LemiFile(Header):
 
         """
         self.channels = ['Bx', 'By', 'Bz', 'Ex', 'Ey']
-        self.sample_rate = 1000  # default
+        self.sample_rate = sample_rate
         if data is None:
             self.data = self.load(os.path.join(
                 directory, file_name), mag_only=mag_only)
@@ -329,25 +377,25 @@ class LemiFile(Header):
             ]
         >>> site.filter(filters,in_place=True)
         """
-        if isinstance(filter, list):
-            b, a = filters.comb(filter, self.sample_rate)
-            return self._apply_filter(b, a, target, in_place)
+        channels = [c for c in self.channels if c not in ['RBx', 'RBy']]
+        array = []
+        for key, filt in filter.items():
+            b, a = filters.comb(filt, self.sample_rate)
 
-        elif isinstance(filter, dict):
-            channels = [c for c in self.channels if c not in ['RBx', 'RBy']]
-            array = []
-            for key, filt in filter.items():
-                b, a = filters.comb(filt, self.sample_rate)
-                to_be_filtered = [c for c in channels if c.startswith(key) or c.endswith(
-                    key.lower()) or c in key.split('_') or key == 'all']
+            # None of these filters were valid for the given export options
+            if b is None and a is None:
+                continue
 
-                if in_place:
-                    self._apply_filter(b, a, to_be_filtered, in_place)
-                else:
-                    for channel in to_be_filtered:
-                        array.append(self._apply_filter(b, a, channel))
+            to_be_filtered = [c for c in channels if c.startswith(key) or c.endswith(
+                key.lower()) or c in key.split('_') or key == 'all']
 
-            return array
+            if in_place:
+                self._apply_filter(b, a, to_be_filtered, in_place)
+            else:
+                for channel in to_be_filtered:
+                    array.append(self._apply_filter(b, a, channel))
+
+        return array
 
     def decimate(self, decimate_to):
         """Decimate the data to sampling frequency specified by decimate_to using `scipy.signal.decimate`.
@@ -370,7 +418,12 @@ class LemiFile(Header):
             raise ValueError(
                 'Target sampling frequency must be less than the sampling frequency of the original data. Original sampling frequency calculated to be {}Hz'.format(self.sample_rate))
 
-        q = int(self.sample_rate/decimate_to)  # downsampling factor
+        if self.sample_rate % decimate_to != 0:
+            raise ValueError(
+            "The target decimation must be an exact divisor of the data sampling rate."
+        )
+
+        q = int(round(self.sample_rate/decimate_to))  # downsampling factor
 
         # apply proper decimation on the data columns
         decimated_array = signal.decimate(self.data[self.channels],
@@ -380,7 +433,7 @@ class LemiFile(Header):
 
         self.data = self.data.iloc[::q, :].copy()
         self._replace_columns(decimated_array)
-
+        self.sample_rate = decimate_to
         return self.data
 
     def export(self, file_name='', prepend_filename='', export_format=None):
@@ -393,6 +446,7 @@ class LemiFile(Header):
         file_name_prepend : str, optional
             String to prepend to the exported file name. Useful to distinguish decimated or filtered data exports.
         """
+
         if prepend_filename:
             prepend_filename += '_'
 
@@ -404,8 +458,6 @@ class LemiFile(Header):
                 file_out = os.path.join(
                     self.directory, prepend_filename+self.output_filename)
 
-            # print('Exporting file {}'.format(file_out))
-
             fmt = []
             for channel in self.data.columns:
                 if channel.startswith('B') or channel.startswith('R'):
@@ -413,11 +465,23 @@ class LemiFile(Header):
                 elif channel.startswith('E'):
                     fmt.append("%.3f")
 
-            with open(file_out, 'a') as f:
-                np.savetxt(f,
-                           self.data,
-                           fmt=' '.join(fmt))
+            # start = dt.now()
 
+            data = self.data.to_numpy()
+            with open(file_out, 'w') as f:
+                # new - ~ 9seconds
+                fmt = ' '.join(fmt)
+                fmt = '\n'.join([fmt]*data.shape[0])
+                data = fmt % tuple(data.ravel())        
+                f.write(data)
+
+                # old - ~25 seconds
+                # np.savetxt(f,
+                #            self.data,
+                #            fmt=' '.join(fmt))
+
+            # print('Export finished in {}'.format(dt.now() - start))
+            
         elif export_format == 'hdf':
             file_out = os.path.join(
                 self.directory, file_name.split('.')[0]+'.h5')
@@ -545,8 +609,13 @@ class Site(Header):
 
         self.deployment_length = self.pickup_time - self.deployment_time
         self.filters = None
-        self.export_options = {}
         self.remote = remote
+
+        try:
+            self.export_options = getattr(export_options,self.name)
+        except Exception:
+            pass
+        # self.export_options = {}
 
         if load is True:
             self.load_file(self.files[0])
@@ -621,15 +690,16 @@ class Site(Header):
                    'filters', 'latitude_dm', 'longitude_dm', 'Ex', 'Ey', 'remote']
         output = {k: v for k, v in self.__dict__.items() if k not in exclude}
         if detailed:
-            output = {
-                **output, **{k+'_var': int(v) for k, v in dict(self.in_memory._variance()).items()}}
+            output.upadte({k+'_var': int(v) for k, v in dict(self.in_memory._variance()).items()})
         return {**output, 'distance_to_remote': self.distance_to_remote()}
 
-    def load_file(self, binary_file, kwargs={}):
+    def load_file(self, binary_file=None, first_between=[], kwargs={}):
         """Loads a binary file into a `LemiFile` instance and stores in `Site.in_memory`. `Site.sample_rate` is also set to avoid future calls to load file when accessing the `sample_rate` attribute.
         """
         if isinstance(binary_file, int):
             binary_file = self.files[binary_file]
+        elif first_between:
+            binary_file = self.files.between_time(*first_between)[0]
         self.in_memory = LemiFile(self.directory, binary_file, **kwargs)
         self.sample_rate = self.in_memory.sample_rate
 
@@ -668,7 +738,8 @@ class Site(Header):
             remote = self.remote.get(remote_files.index.unique(0)[0])
 
             # combine the remote files into a single dataframe
-            remote_data = pd.concat([remote.load_file(
+            remote_data = pd.concat([
+                remote.load_file(
                 f, {'mag_only': True, 'detrend': False}).data[mag_channels] for f in remote_files], copy=False)
 
             # rename the maganetic channels to avoid a name conflict with the site magnetic channels
@@ -684,8 +755,6 @@ class Site(Header):
                              join='inner', copy=False)
 
             del remote_data
-        # delete the original dataframes to free memory
-        # del site_data
 
         # convert merged data to a LemiFile instance
         data = LemiFile(self.directory, file_name='{}Hz'.format(
@@ -700,6 +769,7 @@ class Site(Header):
         return data
 
     def export(self, files, decimate_to=None, create_edi=True, remote=True):
+        
         # Find corresponding remote files if required
         if remote and self.export_options.get('remote', True):
             remote_files = self.remote_files(site_files=files)
@@ -734,8 +804,9 @@ class Site(Header):
             if remote_files is not None:
 
                 # combine the remote files into a single dataframe
-                remote_data = pd.concat([remote.load_file(
-                    f, {'mag_only': True, 'detrend': False}).data[mag_channels] for f in remote_files[:2]], copy=False)
+                remote_data = pd.concat(
+                    [remote.load_file(
+                        f, kwargs={'mag_only': True, 'detrend': False}).data[mag_channels] for f in remote_files[:2]], copy=False)
 
                 # rename the magnetic channels to avoid a name conflict with the site magnetic channels
                 remote_data.rename(
@@ -756,8 +827,9 @@ class Site(Header):
                 remote_files.drop(remote_files.index[0], inplace=True)
 
             # convert merged data to a LemiFile instance
-            data = LemiFile(self.directory, file_name='{}Hz'.format(
-                decimate_to), data=data)
+            data = LemiFile(
+                directory = self.directory, 
+                file_name='{}Hz'.format(decimate_to), data=data)
 
             # Decimate the merged data
             if decimate_to != 1000:
@@ -765,8 +837,12 @@ class Site(Header):
 
             output = pd.concat([output, data.data], copy=False)
 
-        data = LemiFile(self.directory, file_name='{}Hz'.format(
-            decimate_to), data=output)
+        data = LemiFile(
+            directory = self.directory, 
+            file_name='{}Hz'.format(decimate_to), 
+            data=output, 
+            sample_rate=decimate_to)
+
         del output
 
         # Apply filters
@@ -785,6 +861,8 @@ class Site(Header):
             self.to_edi(exported_file_name, channels)
 
     def batch_export(self, processes=None, test=False):
+        print('Starting batch export of site "{}"'.format(self.name))
+        start = dt.now()
         if not processes:
             processes = int(multiprocessing.cpu_count()/2)
 
@@ -792,15 +870,19 @@ class Site(Header):
 
         for decimate_to in sorted(list(self.export_options.get('decimate', DECIMATE_TO))):
             num_files = int(1000/decimate_to)
-            # export_args += list(zip(group_tail(self.files,num_files*2,num_files),repeat(decimate_to)))
-            export_args += list(zip(group_tail(self.files,
-                                               num_files, num_files), repeat(decimate_to)))
+            export_args += list(zip(group_tail(self.files,num_files*2,num_files),repeat(decimate_to)))
+            # export_args += list(zip(group_tail(self.files,
+                                            #    num_files, num_files), repeat(decimate_to)))
 
         if test:
             self.export(self.files[2:4], 1000)
         else:
             with multiprocessing.Pool(processes=processes) as pool:
                 pool.starmap(self.export, export_args)
+
+        print('Export finished in {}'.format(
+            dt.now() - start
+        ))
 
     def create_config(self, file_name, channels):
         # config_file = os.path.join(file_name.split('.')[0])
@@ -848,6 +930,7 @@ class Site(Header):
                 f.write('NREFCH        2\n')
 
     def to_edi(self, file_name, channels, sensor_response=True, robust=True, coherence_presorting=False, prewhitening=None, delete_on_completion=False, suppress_lemi_output=False):
+        # file_name = os.path.join('NVP','D1',file_name)
         self.create_config(file_name, channels)
 
         command = ['lemimt.exe']
@@ -864,16 +947,20 @@ class Site(Header):
         command.append(file_name)
 
         if self.export_options.get('clean', True):
-            log_file = os.devnull
+            subprocess.Popen(command, shell=False,
+             stdin=None, stdout=subprocess.DEVNULL, stderr=None, close_fds=True)
+            # subprocess.run(command)
         else:
+            # when clean is False, lemimt.exe output will be saved to file for later viewing
+            # this dramatically slows lempiy as it will wait for this subprocess to finish so it can capture it's output
             log_file = file_name.split('.')[0]+'.log'
+            with open(log_file, 'w') as f:
+                subprocess.run(command, stdout=f)
 
-        with open(log_file, 'w') as f:
-            subprocess.run(command, stdout=f)
 
-        if delete_on_completion or self.export_options.get('clean', True):
-            os.remove(file_name)
-            os.remove(file_name.replace('.txt', '.cfg'))
+        # if delete_on_completion or self.export_options.get('clean', True):
+        #     os.remove(file_name)
+        #     os.remove(file_name.replace('.txt', '.cfg'))
 
     def distance_to_remote(self):
         return round(geodesic(self.coordinates, list(self.remote.values())[0].coordinates).km, 2)
@@ -944,6 +1031,7 @@ class Survey():
         self.site_list = self.populate_site_list()
         self.remote = self.get_remote(remote)
         self.sites = self.get_sites()
+        self.init_export_options()
 
     def __str__(self):
         return tabulate([[k.replace('_', ' ').title(), v] for k, v in self.summary().items()])
@@ -1028,41 +1116,33 @@ class Survey():
     def _get_detailed_site_summary(self, site):
         self.site_list.append(self.sites[site].summary(detailed=True))
 
-    # def filter(self,site_name,f=10):
+    def init_export_options(self):
+        fname = os.path.join(os.getcwd(),'export_options.py')
+        if not os.path.exists(fname):
+            with open(fname,'w') as f:
+                f.write("from lemipy.filters import remove_50hz_odd, remove_50hz_even, remove_signal\n\n")
+                f.write(
+                    "# This module was automatically created during initialisation of a new survey.\n" + 
+                    "# It contains the outline needed to define some export options for you to use with the lemipy package.\n" +
+                    "# All options that are applied to a particular site in this file will be used during any bulk processing using the lemipy package.\n" +
+                    "# This file serves as not only a list of instructions but also a record of what processing has been applied to each site so that coming back and picking up where you left of is simple.\n" +
+                    "# For a list of all possible options for each site, please see the documentation.\n\n"
+                )
+                f.write("# TODO - Ex looks noisy, B channels are fine, strong powerline hum and harmonics (example comment)\n")
+                for site in self.site_list:
+                    if len(site.split(' ')) > 1:
+                        continue
+                    f.write("{} = {{\n".format(site))
+                    f.write("    'filter': {\n\n")
+                    f.write("        },\n")
+                    f.write("    'remote_offset': 0,\n")
+                    f.write("    }\n\n")
 
-    #     site = self.sites[site_name]
-    #     site.export_options = getattr(export_options,site_name)
-
-    #     if f == 'range':
-    #         for i in range(2,15,4):
-    #             site.load_file(i)
-    #             # plot.time_series(site)
-    #             plot.welch(site,filter=True)
-    #             # plot.spectrogram(site)
-    #     else:
-    #         site.load_file(f)
-    #         # plot.spectrogram(site)
-    #         # plot.time_series(site)
-    #         plot.welch(site,filter=True)
-    #         # plot.spectrogram(site)
-    #         # plot.time_series(site)
-
-    # def export(self,site_name,test=False):
-    #     site = survey.sites[site_name]
-    #     site.export_options = getattr(export_options,site_name)
-    #     if test:
-    #         site.export_options['clean'] = False
-    #         site.batch_export(test=True)
-    #     else:
-    #         site.batch_export(processes=6)
-    #     print(time.time()-t)
-
-    #     # winsound.Beep(400,1000)
-
+            print('Warning: You will need to load the lemipy module again before any export_options are included on your survey object.')
 
 if __name__ == '__main__':
     multiprocessing.freeze_support()
     # freeze_support()
     # t=time.time()
-    # survey = Survey(remote='C5')
-    # site = survey.sites['A1']
+    survey = Survey(directory='NVP', remote='C5', survey_data='survey_data.csv')
+    site = survey.sites['B3']
