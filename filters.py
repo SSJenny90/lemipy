@@ -28,26 +28,36 @@ def comb(filter_specs, sample_rate):
 
     returns the numerator (b) and denominator (a) polynomials of the comb filter
     """
-
+    b, a = None, None #in case all specified filters are above nyquist freq
+    
     for i, specs in enumerate(sorted(filter_specs)):
         freq = specs[0]
         bw = specs[1]
 
-        if not i and freq == 0:
-            #it's a high pass filter
-            if len(specs) > 2:
-                b, a = high_pass(cutoff_freq=bw,order=specs[2])
-            else:
-                b, a = high_pass(cutoff_freq=bw)
-        elif not i:
-            b, a = notch(freq,bw,sample_rate)
-            # b, a = bandstop(*freq,sample_rate,order=bw)
+        if freq > sample_rate / 2:
+            # make sure only filters below the nyquist freq are applied
+            # otherwise will throw error
+            continue
+
+        if i == 0:
+            b, a = apply_filter(freq, bw, sample_rate)
         else:
-            # tmpb, tmpa = bandstop(*freq,sample_rate,order=bw)
-            tmpb, tmpa = notch(freq,bw,sample_rate)
+            tmpb, tmpa = apply_filter(freq, bw, sample_rate)
             a = signal.convolve(a,tmpa)
             b = signal.convolve(b,tmpb)
     return b, a
+
+def apply_filter(freq, bandwidth, sample_rate):
+    if freq == 0:  # this is a highpass
+        b, a = high_pass(cutoff_freq=bandwidth,sample_rate=sample_rate)
+    elif freq == sample_rate/2: # this is a low pass
+        b, a = low_pass(cutoff_freq=freq - bandwidth/2, sample_rate=sample_rate)
+    else:   
+        b, a = notch(freq,bandwidth,sample_rate)
+    
+    return b, a
+
+
 
 def notch(freq,bandwidth,sample_rate=1000):
     """Creates a -3dB notch filter centered at "freq" with a width of "bandwidth"
@@ -61,7 +71,10 @@ def bandstop(low_cut,high_cut,sample_rate=1000,order=3):
     # return signal.iirnotch(freq,freq/bandwidth, fs=sample_rate)
 
 def high_pass(cutoff_freq,order=2,sample_rate=1000):
-    return signal.butter(order, cutoff_freq, 'hp', fs=sample_rate)
+    return signal.butter(order, cutoff_freq, btype='hp', fs=sample_rate)
+
+def low_pass(cutoff_freq,order=2,sample_rate=1000):
+    return signal.butter(order, cutoff_freq, fs=sample_rate)
 
 def auto_filter(self,bandwidth=4,plot_peaks=False):
     """Experimental"""
