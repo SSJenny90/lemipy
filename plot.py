@@ -1,10 +1,13 @@
 import matplotlib.pyplot as plt
 from scipy import signal
-# plt.ion()
+plt.ion()
 from datetime import datetime as dt
 B_LIMS = [-1000, 1000]
 E_LIMS = [-8000, 8000]
-
+import os
+import export_options
+import copy
+import warnings
 
 def save_figure(fig,fig_type,dir):
     if not os.path.exists(dir):
@@ -49,31 +52,37 @@ def time_series(site, auto_limits=False,save_fig=False):
 def coherence(site):
     f, Cxy = signal.coherence(lemi.data['time'],lemi.data['Bx'])
 
-def welch(site,plot_peaks=False,save_fig=False,filter=False):
+def welch(site,file_name=None,plot_peaks=False,save_fig=False,filter=False,decimate=False):
     nperseg = 2*10**4
+    site.export_options = getattr(export_options,site.name)
+    if file_name is not None:
+        site.load_file(file_name)
+    else:
+        site.load_file(0)
+
     lemi = site.in_memory
-    # lemi = site
+
+    if decimate:
+        lemi.decimate(decimate)
+
     data = lemi.data[lemi.channels].to_numpy().transpose()
     f, Pxx_den = signal.welch(data,fs=lemi.sample_rate,nperseg=nperseg)
 
-    fig = plt.figure('Power Spectral Density')
-    if fig.axes:
-        xlim = fig.axes[0].get_xlim()
-        ylim = fig.axes[0].get_ylim() 
-    else:
-        xlim = None
-        
-    fig.clear()
+    fig = plt.figure('Power Spectral Density')   
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')    
+        fig.clear()
     
     fig, ax = plt.subplots(2,2,sharex=True, sharey=True, subplot_kw={},num='Power Spectral Density')
-    # fig, ax = plt.subplots(2,2,sharex=True, sharey=True, subplot_kw={})
-    # t = dt.fromtimestamp(int(lemi.file_name.split('.')[0]))
+    t = dt.fromtimestamp(int(lemi.file_name.split('.')[0]))
 
-    # fig.suptitle('{} [{}]\n{}'.format(site.name,site.in_memory.file_name,t.strftime('%d-%b %I:%M%p')))
+    fig.suptitle('{} [{}]\n{}'.format(site.name,site.in_memory.file_name,t.strftime('%d-%b %I:%M%p')))
 
     if filter:
-        site.in_memory.filter(site.export_options['filter'],in_place=True)
-        filtered_data = site.in_memory.data[lemi.channels].to_numpy().transpose()
+        site_copy = copy.deepcopy(site.in_memory)
+        site_copy.filter(site.export_options['filter'],in_place=True)
+        filtered_data = site_copy.data[lemi.channels].to_numpy().transpose()
         filtered_f, filtered_Pxx_den = signal.welch(filtered_data,fs=lemi.sample_rate,nperseg=nperseg)
 
     for i,axx in enumerate(ax.flat):
@@ -104,6 +113,7 @@ def welch(site,plot_peaks=False,save_fig=False,filter=False):
     if save_fig:
         save_figure(fig,'welch',lemi.plot_directory)
 
+    # return fig, ax
     # return f,Pxx_den
 
 def spectrogram(site):
@@ -125,3 +135,31 @@ def spectrogram(site):
     ax[1][0].set_ylabel(ylabel)
     ax[1][1].set_xlabel(xlabel)
     ax[0][0].set_ylabel(ylabel)
+
+def lemi_log(fname):
+    # fname = os.path.join('NVP','A4','F1000Hz_21_Aug_2019_1406.log')
+
+    with open(fname) as f:
+        f.readline()
+        f.readline()
+        f.readline()
+        file_data = f.readlines()
+
+    data = dict(
+        period = [],
+        num_sections = [],
+        num_used = [],
+    )
+
+    for line in file_data:
+        if 'Period' in line:
+            data['period'].append(round(float(line.split(':')[-1]),3))
+
+        elif 'Number of sections' in line:
+            data['num_sections'].append(float(line.split(':')[-1]))
+
+        elif 'used sections' in line:
+            data['num_used'].append(float(line.split(':')[-1]))
+
+    data = pd.DataFrame(data)
+    ax = data.plot.area(stacked=False,x='period',logx=True,xlim=[data.period.min(),data.period.max()])
