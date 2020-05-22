@@ -26,65 +26,64 @@ def color(channel):
     else:
         return 'b'
 
-def time_series(site, auto_limits=False,save_fig=False):
-    
-    lemi = site.in_memory
 
-    fig,ax =  plt.subplots(len(lemi.channels),1, sharex=True)
+def plot(plot_type, site, file_name=None, filter=False, decimate=False):
+    
+    if not isinstance(plot_type,list):
+        plot_type = [plot_type]
+    
+    for p in plot_type:
+        pass
+
+
+def time_series(site,file_name=None,filter=False,decimate=False):
+    
+    lemi = load(site, file_name, decimate)
+
+    # filter data
+    if filter:
+        filtered = copy.deepcopy(lemi)
+        filtered.filter(site.export_options['filter'],in_place=True)
+
+    reset_figure(site, 'Time Series', decimate)
+
+    fig, ax =  plt.subplots(len(lemi.channels),1, sharex=True, subplot_kw={},num='Time Series')
     fig.subplots_adjust(hspace=0)
 
-    # print(lemi.data.index)
-    # lemi.data.index = lemi.data.index.tz_localize(None)
-    # print(lemi.data.index)
-    for axx,channel in zip(ax.flat,lemi.channels):
-        axx.plot(lemi.data[channel],color(channel),linewidth=0.25,label=channel)
+    # Create the figure
+    for axx, channel in zip(ax.flat,lemi.channels):
+        if filter:
+            axx.plot(lemi.data[channel],'grey',linewidth=0.25,label=channel)
+            axx.plot(filtered.data[channel],color(channel),linewidth=0.25,label=channel)
+        else:
+            axx.plot(lemi.data[channel],color(channel),linewidth=0.25,label=channel)
+
         axx.set_ylabel(channel, rotation=0)
-        # if not auto_limits:
-        #     axx.set_ylim(*set_lims(channel))
-
-    t = dt.fromtimestamp(int(lemi.file_name.split('.')[0]))
-
-    fig.suptitle('Time Series \n{} - {}'.format(site.name,t.strftime('%d-%b %I:%M%p')))
-
-    if save_fig:
-        save_figure(fig,'time_series',lemi.plot_directory)
-
+  
 def coherence(site):
     f, Cxy = signal.coherence(lemi.data['time'],lemi.data['Bx'])
 
-def welch(site,file_name=None,plot_peaks=False,save_fig=False,filter=False,decimate=False):
+def welch(site,file_name=None,filter=False,decimate=False):
+    lemi = load(site, file_name, decimate)
+
     nperseg = 2*10**4
-    site.export_options = getattr(export_options,site.name)
-    if file_name is not None:
-        site.load_file(file_name)
-    else:
-        site.load_file(0)
 
-    lemi = site.in_memory
-
-    if decimate:
-        lemi.decimate(decimate)
-
+    # perform welch on original data
     data = lemi.data[lemi.channels].to_numpy().transpose()
     f, Pxx_den = signal.welch(data,fs=lemi.sample_rate,nperseg=nperseg)
 
-    fig = plt.figure('Power Spectral Density')   
-
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')    
-        fig.clear()
-    
-    fig, ax = plt.subplots(2,2,sharex=True, sharey=True, subplot_kw={},num='Power Spectral Density')
-    t = dt.fromtimestamp(int(lemi.file_name.split('.')[0]))
-
-    fig.suptitle('{} [{}]\n{}'.format(site.name,site.in_memory.file_name,t.strftime('%d-%b %I:%M%p')))
-
     if filter:
-        site_copy = copy.deepcopy(site.in_memory)
-        site_copy.filter(site.export_options['filter'],in_place=True)
-        filtered_data = site_copy.data[lemi.channels].to_numpy().transpose()
+        # filter data and perform welch method
+        lemi.filter(site.export_options['filter'],in_place=True)
+        filtered_data = lemi.data[lemi.channels].to_numpy().transpose()
         filtered_f, filtered_Pxx_den = signal.welch(filtered_data,fs=lemi.sample_rate,nperseg=nperseg)
 
+
+    reset_figure(site, 'Power Spectral Density', decimate)
+    
+    fig, ax = plt.subplots(2,2,sharex=True, sharey=True, subplot_kw={},num='Power Spectral Density')
+
+    # create the plots in for loop
     for i,axx in enumerate(ax.flat):
         if filter:
             axx.semilogy(filtered_f, filtered_Pxx_den[i],color(lemi.channels[i]),linewidth=0.25,label='Filtered '+ lemi.channels[i])
@@ -92,16 +91,8 @@ def welch(site,file_name=None,plot_peaks=False,save_fig=False,filter=False,decim
         else:
             axx.semilogy(f, Pxx_den[i],color(lemi.channels[i]),linewidth=0.25,label=lemi.channels[i])
 
-        # if xlim:
-        #     axx.set_xlim(xlim)
-        #     axx.set_ylim(ylim)
-
-
-
         axx.tick_params(direction='in')
         axx.legend()
-        if plot_peaks:
-            lemi.detect_peaks(Pxx_den[i],axis=axx)
 
     xlabel,ylabel = 'Frequency [Hz]','PSD [dB/Hz]'
     ax[1][0].set_xlabel(xlabel)
@@ -109,12 +100,6 @@ def welch(site,file_name=None,plot_peaks=False,save_fig=False,filter=False,decim
     ax[1][1].set_xlabel(xlabel)
     ax[0][0].set_ylabel(ylabel)
     fig.subplots_adjust(hspace=0, wspace=0)
-
-    if save_fig:
-        save_figure(fig,'welch',lemi.plot_directory)
-
-    # return fig, ax
-    # return f,Pxx_den
 
 def spectrogram(site):
     """Not working"""
@@ -163,3 +148,40 @@ def lemi_log(fname):
 
     data = pd.DataFrame(data)
     ax = data.plot.area(stacked=False,x='period',logx=True,xlim=[data.period.min(),data.period.max()])
+
+def reset_figure(site, figure_name, decimate=''):
+    # create or get an existing figure    
+    fig = plt.figure(figure_name)   
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')   
+        # clear the existing figure to allow replotting in same window 
+        # I imagine there's a much better way to do this
+        fig.clear()  
+
+    # create the title 
+    t = dt.fromtimestamp(int(site.in_memory.file_name.split('.')[0]))
+    if decimate:
+        fig.suptitle('{site} [{file}] - {decimated}Hz\n{time}'.format(
+            site = site.name,
+            file = site.in_memory.file_name,
+            decimated = decimate,
+            time = t.strftime('%d-%b %I:%M%p'),
+            ))
+    else:
+        fig.suptitle('{site} [{file}]\n{time}'.format(
+            site = site.name,
+            file = site.in_memory.file_name,
+            time = t.strftime('%d-%b %I:%M%p'),
+            ))
+
+def load(site, file_name, decimate):
+    site.export_options = getattr(export_options,site.name)
+    if file_name is not None:
+        site.load_file(file_name)
+    else:
+        site.load_file(0)
+
+    if decimate:
+        site.in_memory.decimate(decimate)
+
+    return site.in_memory
