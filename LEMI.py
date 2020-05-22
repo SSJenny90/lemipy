@@ -465,8 +465,6 @@ class LemiFile(Header):
                 elif channel.startswith('E'):
                     fmt.append("%.3f")
 
-            # start = dt.now()
-
             data = self.data.to_numpy()
             with open(file_out, 'w') as f:
                 # new - ~ 9seconds
@@ -474,13 +472,6 @@ class LemiFile(Header):
                 fmt = '\n'.join([fmt]*data.shape[0])
                 data = fmt % tuple(data.ravel())        
                 f.write(data)
-
-                # old - ~25 seconds
-                # np.savetxt(f,
-                #            self.data,
-                #            fmt=' '.join(fmt))
-
-            # print('Export finished in {}'.format(dt.now() - start))
             
         elif export_format == 'hdf':
             file_out = os.path.join(
@@ -610,6 +601,7 @@ class Site(Header):
         self.deployment_length = self.pickup_time - self.deployment_time
         self.filters = None
         self.remote = remote
+        self.file_freq = self.files.index[2] - self.files.index[1]
 
         try:
             self.export_options = getattr(export_options,self.name)
@@ -632,7 +624,6 @@ class Site(Header):
     @property
     def files(self):
         files = list_files(self.directory, '.B423')
-        self.file_freq = files.index[2] - files.index[1]
         return files
 
     @cached_property
@@ -693,13 +684,21 @@ class Site(Header):
             output.upadte({k+'_var': int(v) for k, v in dict(self.in_memory._variance()).items()})
         return {**output, 'distance_to_remote': self.distance_to_remote()}
 
-    def load_file(self, binary_file=None, first_between=[], kwargs={}):
+    def load_file(self, binary_file=None, kwargs={}):
         """Loads a binary file into a `LemiFile` instance and stores in `Site.in_memory`. `Site.sample_rate` is also set to avoid future calls to load file when accessing the `sample_rate` attribute.
         """
         if isinstance(binary_file, int):
+            # find the file at the given index
             binary_file = self.files[binary_file]
-        elif first_between:
-            binary_file = self.files.between_time(*first_between)[0]
+        elif isinstance(binary_file, list):
+            # find the file between to times
+            binary_file = self.files.between_time(*binary_file)[0]
+        elif '.B423' not in binary_file:
+            # find the next file after a given time
+            hours = int(binary_file[:2])
+            binary_file = self.files.between_time(
+                binary_file,'{}{}'.format(hours+2,binary_file[2:]))[0]
+
         self.in_memory = LemiFile(self.directory, binary_file, **kwargs)
         self.sample_rate = self.in_memory.sample_rate
 
