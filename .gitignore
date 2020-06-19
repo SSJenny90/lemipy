@@ -1,5 +1,15 @@
+data/*
+*.gtd
+soundings
+*.gtd.Data
+.vscode
+lemimte.exe
+sensors/*
+*.csv
+
+
 # Byte-compiled / optimized / DLL files
-__pycache__/
+__pycache__
 *.py[cod]
 *$py.class
 

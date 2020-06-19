@@ -92,7 +92,7 @@ def group(iterator, count, series=True):
             break
 
 
-def list_files(directory, file_type):
+def list_files(directory, file_type, output='series'):
     """Generate a list of files of a certain file type from a given directory.
 
     Args:
@@ -103,7 +103,10 @@ def list_files(directory, file_type):
         list: The files of specified type in the given directory.
     """
     files = [f for f in os.listdir(directory) if f.endswith(file_type)]
-    return files_list_to_series(files)
+    if output == 'series':
+        return files_list_to_series(files)
+    else:
+        return files
 
 
 def files_list_to_series(files):
@@ -203,7 +206,7 @@ class Header():
     def get_current(self, header):
         return float(header[7].split(' ')[-1].replace('mA', ''))
 
-
+# @pd.api.extensions.register_dataframe_accessor("lemi")
 class LemiFile(Header):
     """Container for a Lemi 423 binary file
 
@@ -232,7 +235,7 @@ class LemiFile(Header):
     FILE_NAME_FORMAT = "%d_%b_%Y_%H%M"
     DATETIME_FORMAT = "%Y %m %d %H %M %S"
 
-    def __init__(self, directory, file_name, data=None, sample_rate=1000, detrend=True, mag_only=False):
+    def __init__(self, directory, file_name, data=None, sample_rate=1000, detrend=True, mag_only=False, channels=[]):
         """
         Parameters
         ----------
@@ -246,7 +249,10 @@ class LemiFile(Header):
             Specify whether data is detrended on initialisation (default to True). Data may be detrended after loading using `LemiFile.detrend`.
 
         """
-        self.channels = ['Bx', 'By', 'Bz', 'Ex', 'Ey']
+        if channels:
+            self.channels = channels
+        else:
+            self.channels = ['Bx', 'By', 'Bz', 'Ex', 'Ey']
         self.sample_rate = sample_rate
         if data is None:
             self.data = self.load(os.path.join(
@@ -302,9 +308,17 @@ class LemiFile(Header):
             raise ValueError(
                 'Unsupported file type. Only binary and hdf files are currently supported for loading.')
 
-        if mag_only:
-            df.drop(columns=['Ex', 'Ey'], inplace=True)
-            [self.channels.remove(channel) for channel in ['Ex', 'Ey']]
+
+        drop = [k for k in ['tick','Bx','By','Bz','Ex','Ey','CRC', 'sync', 'stage'] if k in df.keys()]
+        for c in self.channels:
+            if c in drop:
+                drop.remove(c)
+
+        df.drop(columns=drop, inplace=True)
+
+        # if mag_only:
+        #     df.drop(columns=['Ex', 'Ey'], inplace=True)
+        #     [self.channels.remove(channel) for channel in ['Ex', 'Ey']]
 
         return df
 
@@ -396,6 +410,17 @@ class LemiFile(Header):
                     array.append(self._apply_filter(b, a, channel))
 
         return array
+
+    def despike(self, channel, prominence, distance, window_size=50, in_place=False):
+
+        channels = [c for c in self.channels if c not in ['RBx', 'RBy']]
+        array = []
+        for key, filt in filter.items():
+            to_be_despiked = [c for c in channels if c.startswith(key) or c.endswith(
+                key.lower()) or c in key.split('_') or key == 'all']
+
+            for channel in to_be_filtered:
+                self.data[channel], _, _ = filters.despike(self.data[channel], prominence, distance, window_size)
 
     def decimate(self, decimate_to):
         """Decimate the data to sampling frequency specified by decimate_to using `scipy.signal.decimate`.
@@ -533,21 +558,21 @@ class LemiFile(Header):
         if TIMEZONE:
             # df.index = df.index.tz_convert(TIMEZONE).tz_localize(None)
             pass
-        drop = ['tick', 'CRC', 'sync', 'stage']  # always dropped
+        # drop = ['tick', 'CRC', 'sync', 'stage']  # always dropped
         self.sample_rate = df['tick'].max()+1
 
-        # drop = []
-        if df['Bz'].mean() < -5000 or df['Bz'].var() < 10:
-            drop.append('Bz')
-            # avoids computationally expensive processing on Bz if no data is recorded
-            self.channels.remove('Bz')
+
+
+        # if df['Bz'].mean() < -5000 or df['Bz'].var() < 10:
+        #     drop.append('Bz')
+        #     # avoids computationally expensive processing on Bz if no data is recorded
+        #     self.channels.remove('Bz')
 
             # if mag_only:
             #     drop.append('Bz')
             # else:
             #     df['Bz'] = np.zeros(df.shape[0],dtype=int)
 
-        df.drop(columns=drop, inplace=True)
 
         return df
 
@@ -576,7 +601,7 @@ class Site(Header):
             Sampling frequency of the instrument. Requires loading a binary file when first accessed. Attribute is cached so that all subsequent queries do not require load a file.
     """
 
-    def __init__(self, site_name, survey_data=None, directory=os.getcwd(), load=False, remote=None):
+    def __init__(self, site_name, survey_data=None, directory=os.getcwd(), load=False, remote=None, channels=[]):
         """
         Parameters:
 
@@ -601,13 +626,14 @@ class Site(Header):
         self.deployment_length = self.pickup_time - self.deployment_time
         self.filters = None
         self.remote = remote
-        self.file_freq = self.files.index[2] - self.files.index[1]
+        self.file_freq = self.files.index[2] - self.files.index[1]       
+        self.channels = channels
 
         try:
             self.export_options = getattr(export_options,self.name)
         except Exception:
             pass
-        # self.export_options = {}
+        self.export_options = {}
 
         if load is True:
             self.load_file(self.files[0])
@@ -615,7 +641,10 @@ class Site(Header):
             self.load_file(load)
 
     def __str__(self):
-        return tabulate([[k, v] for k, v in self.summary().items()])
+        return str(pd.Series(self.summary()))
+        # return ''
+        
+        # return tabulate([[k, v] for k, v in self.summary().items()])
 
     @property
     def coordinates(self):
@@ -681,7 +710,7 @@ class Site(Header):
                    'filters', 'latitude_dm', 'longitude_dm', 'Ex', 'Ey', 'remote']
         output = {k: v for k, v in self.__dict__.items() if k not in exclude}
         if detailed:
-            output.upadte({k+'_var': int(v) for k, v in dict(self.in_memory._variance()).items()})
+            output.update({k+'_var': int(v) for k, v in dict(self.in_memory._variance()).items()})
         return {**output, 'distance_to_remote': self.distance_to_remote()}
 
     def load_file(self, binary_file=None, kwargs={}):
@@ -693,11 +722,16 @@ class Site(Header):
         elif isinstance(binary_file, list):
             # find the file between to times
             binary_file = self.files.between_time(*binary_file)[0]
-        elif '.B423' not in binary_file:
-            # find the next file after a given time
+        
+        elif binary_file.split('.')[-1] not in ['B423','h5']: #it's a string but not a filename
+            # assum it's a time so find the next file after the given time
             hours = int(binary_file[:2])
             binary_file = self.files.between_time(
                 binary_file,'{}{}'.format(hours+2,binary_file[2:]))[0]
+
+        if 'channels' not in kwargs.keys():
+            kwargs['channels'] = self.channels
+
 
         self.in_memory = LemiFile(self.directory, binary_file, **kwargs)
         self.sample_rate = self.in_memory.sample_rate
@@ -794,11 +828,15 @@ class Site(Header):
         output = pd.DataFrame()
 
         for f in files:
-            data = self.load_file(f).data
+
+            # gets the available magnetic channels on the site
+            # use these to get appropriate data from remote
+            mag_channels = [c for c in self.channels if c.startswith('B')]
+            
+            data = self.load_file(f,kwargs={'channels':self.channels}).data
 
             # determine the available magnetic channels from the site data
-            mag_channels = [
-                channel for channel in data.columns if channel.startswith('B')]
+            # mag_channels = [channel for channel in data.columns if channel.startswith('B')]
 
             if remote_files is not None:
 
@@ -860,21 +898,28 @@ class Site(Header):
             self.to_edi(exported_file_name, channels)
 
     def batch_export(self, processes=None, test=False):
-        print('Starting batch export of site "{}"'.format(self.name))
+        print('Starting batch export of site "{}"\n'.format(self.name))
         start = dt.now()
         if not processes:
             processes = int(multiprocessing.cpu_count()/2)
+
+
+        if self.export_options.get('between_time'):
+            between_time = self.export_options.get('between_time')
+            files_list = self.files[between_time[0]:between_time[1]]
+        else:
+            files_list = self.files
 
         export_args = []
 
         for decimate_to in sorted(list(self.export_options.get('decimate', DECIMATE_TO))):
             num_files = int(1000/decimate_to)
-            export_args += list(zip(group_tail(self.files,num_files*2,num_files),repeat(decimate_to)))
+            export_args += list(zip(group_tail(files_list,num_files*2,num_files),repeat(decimate_to)))
             # export_args += list(zip(group_tail(self.files,
                                             #    num_files, num_files), repeat(decimate_to)))
 
         if test:
-            self.export(self.files[2:4], 1000)
+            self.export(self.files[2:3], 1000)
         else:
             with multiprocessing.Pool(processes=processes) as pool:
                 pool.starmap(self.export, export_args)
@@ -948,7 +993,6 @@ class Site(Header):
         if self.export_options.get('clean', True):
             subprocess.Popen(command, shell=False,
              stdin=None, stdout=subprocess.DEVNULL, stderr=None, close_fds=True)
-            # subprocess.run(command)
         else:
             # when clean is False, lemimt.exe output will be saved to file for later viewing
             # this dramatically slows lempiy as it will wait for this subprocess to finish so it can capture it's output
@@ -1010,7 +1054,7 @@ class Survey():
             Number of sites
     """
 
-    def __init__(self, directory=os.getcwd(), remote='/', survey_data=None):
+    def __init__(self, directory=os.getcwd(), remote='/', survey_data=None, channels=[]):
         """        
         Parameters:
             directory : str, opt
@@ -1021,13 +1065,14 @@ class Survey():
                 Path to a .csv file containing reported data at each site. Processing will be unavailable if not specified as this information cannot be determined through introspection of binary files.
         """
         self.directory = directory
+        self.channels = channels
 
         if survey_data is not None:
             self.survey_data = pd.read_csv(survey_data, index_col='name')
         else:
             self.survey_data = None
 
-        self.site_list = self.populate_site_list()
+        # self.site_list = self.populate_site_list()
         self.remote = self.get_remote(remote)
         self.sites = self.get_sites()
         self.init_export_options()
@@ -1035,7 +1080,8 @@ class Survey():
     def __str__(self):
         return tabulate([[k.replace('_', ' ').title(), v] for k, v in self.summary().items()])
 
-    def populate_site_list(self):
+    @property
+    def site_list(self):
         return [name for name in sorted(os.listdir(self.directory)) if os.path.isdir(os.path.join(self.directory, name)) and not list_files(os.path.join(self.directory, name), '.B423').empty]
 
     @property
@@ -1045,20 +1091,14 @@ class Survey():
     def get_remote(self, remote_name):
         if remote_name != '/':
             # find all site folders that startwith remote_name
-            return {site: Site(site, survey_data=self.survey_data, directory=self.directory) for site in self.site_list if site.startswith(remote_name)}
+            return {site: Site(site, survey_data=self.survey_data, directory=self.directory, channels=self.channels) for site in self.site_list if site.startswith(remote_name)}
 
     def get_sites(self):
         return {site: Site(site,
                            survey_data=self.survey_data,
                            remote=self.remote,
-                           directory=self.directory) for site in self.site_list}
-
-        # for site in self.site_list:
-        #     self.sites[site] = Site(site,survey_data=self.survey_data,remote=self.remote)
-        # if isinstance(self.survey_data,pd.DataFrame):
-
-        # else:
-        #     self.sites[site] = Site(site,remote=self.remote)
+                           directory=self.directory,
+                           channels=self.channels) for site in self.site_list}
 
     def dataframe(self, filename=None, detailed=False, processes=None):
         """Returns a pandas dataframe summarising the survey. If a filename is provided, the dataframe will be saved to file using the pandas `DataFrame.to_csv' method.
@@ -1086,10 +1126,10 @@ class Survey():
                     pass
 
         else:
-            self.site_list = [site.summary(detailed)
+            x = [site.summary(detailed)
                               for site in self.sites.values()]
 
-        df = pd.DataFrame(self.site_list)
+        df = pd.DataFrame(x)
         df.sort_values(by=['name'], inplace=True)
         df.set_index('name', inplace=True)
         if filename:
@@ -1098,7 +1138,7 @@ class Survey():
 
     def summary(self):
         """Provides a brief summary of the survey."""
-        print(os.path.basename(os.getcwd()))
+        print(self.directory.capitalize())
         df = self.dataframe()
         return dict(
             site_count=df.shape[0],
@@ -1116,7 +1156,7 @@ class Survey():
         self.site_list.append(self.sites[site].summary(detailed=True))
 
     def init_export_options(self):
-        fname = os.path.join(os.getcwd(),'export_options.py')
+        fname = os.path.join(self.directory,'export_options.py')
         if not os.path.exists(fname):
             with open(fname,'w') as f:
                 f.write("from lemipy.filters import remove_50hz_odd, remove_50hz_even, remove_signal\n\n")
